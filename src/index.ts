@@ -64,7 +64,7 @@ class MessagingService {
       user,
       pass,
       authenticator,
-      timeoutMs = 10000,
+      timeoutMs = this.defaultTimeout,
       maxReconnectAttempts = -1,
       reconnectTimeWaitMs = 2000,
       pingIntervalMs = 2000,
@@ -126,7 +126,7 @@ class MessagingService {
           const data = msg.json<Message>();
           msgHandler(channel, data);
         } catch (e) {
-          console.error(`[NATS] Failed to decode/handle message on ${channel}:`, e);
+          console.error(`[NATS] Failed to decode/handle message on ${channel}, msg: ${msg}`, e);
         }
       },
     });
