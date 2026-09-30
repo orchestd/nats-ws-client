@@ -32,7 +32,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "nats.ws": "^1.28.0"
+    "@nats-io/nats-core": "^3.4.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

@@ -1,13 +1,10 @@
 import {
-  connect,
-  DebugEvents,
-  Events,
-  JSONCodec,
+  wsconnect,
   NatsConnection,
   ConnectionOptions,
   Subscription,
-  Msg, Authenticator, jwtAuthenticator,
-} from 'nats.ws';
+  Msg, Authenticator, jwtAuthenticator
+} from '@nats-io/nats-core';
 
 export interface MessagingConfig {
   servers: string | string[];
@@ -58,7 +55,6 @@ export type ActionHandler<T = unknown> = (channel: string, data: T) => void;
 
 class MessagingService {
   private conn: NatsConnection | null = null;
-  private readonly codec = JSONCodec();
   private defaultTimeout = 10000;
   private subscriptions: Record<string, Subscription> = {}
 
@@ -86,7 +82,7 @@ class MessagingService {
       pingInterval: pingIntervalMs,
     };
 
-    this.conn = await connect(options);
+    this.conn = await wsconnect(options);
     this.monitorStatus(this.conn);
     return this.conn;
   }
@@ -99,8 +95,8 @@ class MessagingService {
     const conn = this.getConn();
     const timeout = opt?.timeout ?? this.defaultTimeout;
 
-    const res = await conn.request(channel, this.codec.encode(msg), { timeout });
-    const decoded = this.codec.decode(res.data) as TResponse;
+    const res = await conn.request(channel, JSON.stringify(msg), { timeout });
+    const decoded = res.json<TResponse>();
 
     if (!decoded?.success) {
       throw decoded;
@@ -111,7 +107,7 @@ class MessagingService {
 
   publish(channel: string, msg: Message): void {
     const conn = this.getConn();
-    conn.publish(channel, this.codec.encode(msg));
+    conn.publish(channel, JSON.stringify(msg));
   }
 
   subscribe(
@@ -127,7 +123,7 @@ class MessagingService {
           return;
         }
         try {
-          const data = this.codec.decode(msg.data) as Message;
+          const data = msg.json<Message>();
           msgHandler(channel, data);
         } catch (e) {
           console.error(`[NATS] Failed to decode/handle message on ${channel}:`, e);
@@ -166,25 +162,8 @@ class MessagingService {
   private async monitorStatus(conn: NatsConnection): Promise<void> {
     try {
       for await (const s of conn.status()) {
-        switch (s.type) {
-          case Events.Disconnect:
-            console.log(`[NATS] Disconnected: ${s.data}`);
-            break;
-          case Events.Reconnect:
-            console.log(`[NATS] Reconnected: ${s.data}`);
-            break;
-          case Events.LDM:
-            console.log('[NATS] Requested to reconnect (LDM)');
-            break;
-          case Events.Update:
-            console.log(`[NATS] Cluster update received: ${s.data}`);
-            break;
-          case DebugEvents.Reconnecting:
-            console.log('[NATS] Attempting reconnect...');
-            break;
-          case DebugEvents.StaleConnection:
-            console.log('[NATS] Connection is stale');
-            break;
+        if (s.type !== 'ping' && s.type !== 'update') {
+          console.log(`[NATS] Event:`, s);
         }
       }
     } catch (err) {
