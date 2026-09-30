@@ -1,0 +1,45 @@
+{
+  "name": "nats-service-wrapper",
+  "version": "1.0.0",
+  "description": "A lightweight TypeScript wrapper for nats.ws with JetStream and KV support",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/**/*.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "nats",
+    "nats.ws",
+    "websocket",
+    "jetstream",
+    "typescript",
+    "pubsub"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "nats.ws": "^1.28.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsup": "^8.0.2",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
