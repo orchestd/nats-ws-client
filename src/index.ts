@@ -20,17 +20,17 @@ export interface MessagingConfig {
 export interface BaseConnectionConfig {
   authType: string;
   servers: string[];
-  creds: unknown
+  credentials: unknown
 }
 
 export interface UserPassConnectionConfig extends BaseConnectionConfig {
   authType: 'userpass';
-  creds: { username: string; password: string }
+  credentials: { username: string; password: string }
 }
 
 export interface JwtConnectionConfig extends BaseConnectionConfig {
   authType: 'jwt';
-  creds: { jwt: string }
+  credentials: { jwt: string }
 }
 
 export type ConnectionConfig = UserPassConnectionConfig | JwtConnectionConfig;
@@ -180,14 +180,14 @@ export const connectMessagingService = (config: ConnectionConfig) => {
     case 'userpass':
       return messagingService.connect({
         servers: config.servers,
-        user: config.creds.username,
-        pass: config.creds.password,
+        user: config.credentials.username,
+        pass: config.credentials.password,
       });
 
     case 'jwt':
       return messagingService.connect({
         servers: config.servers,
-        authenticator: jwtAuthenticator(config.creds.jwt),
+        authenticator: jwtAuthenticator(config.credentials.jwt),
       });
 
     default: {
