@@ -214,20 +214,20 @@ class MessagingService {
 export const messagingService = new MessagingService();
 
 // Standalone function exports
-export const connectMessagingService = (config: ConnectionConfig) => {
+export const connectMessagingService = (config: ConnectionConfig, options?: ConnectionOptions) => {
   switch (config.authType) {
     case 'userpass':
       return messagingService.connect({
         servers: config.servers,
         user: config.credentials.username,
         pass: config.credentials.password,
-      });
+      }, options);
 
     case 'jwt':
       return messagingService.connect({
         servers: config.servers,
         authenticator: jwtAuthenticator(config.credentials.jwt),
-      });
+      }, options);
 
     default: {
       throw new Error(`Auth type not supported: ${JSON.stringify(config)}`);
