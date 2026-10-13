@@ -140,9 +140,12 @@ class MessagingService {
     msgHandler: (channel: string, data: Message) => void
   ): Subscription | undefined {
     if (!this.conn) {
-      console.log('test')
       this.queue.push({ channel, msgHandler })
-      this.connect(this.config as MessagingConfig, this.optionalOptions)
+      try {
+        this.connect(this.config as MessagingConfig, this.optionalOptions)
+      } catch (e) {
+        console.warn('[NATS] failed to connect on subscribe', e)
+      }
       return
     } else if (this.subscriptions.has(channel)) {
       return this.subscriptions.get(channel)
