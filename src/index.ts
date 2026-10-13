@@ -59,12 +59,11 @@ interface Task {
 export type ActionHandler<T = unknown> = (channel: string, data: T) => void;
 
 class MessagingService {
-  private conn: NatsConnection | null | undefined;
-  private optionalOptions: ConnectionOptions | undefined = {}
-  private config: MessagingConfig | undefined
+  private conn: NatsConnection | null = null;
+  private optionalOptions: ConnectionOptions = {} as ConnectionOptions
+  private config: MessagingConfig = {} as MessagingConfig
   private queue: Task[] = [];
   private connecting = false;
-  private disconnecting = false;
   private defaultTimeout = 10000;
   private subscriptions: Map<string, Subscription> = new Map();
 
@@ -81,7 +80,7 @@ class MessagingService {
     } = config;
 
     this.config = config
-    this.optionalOptions = optionalOptions
+    this.optionalOptions = optionalOptions ?? {}
     this.defaultTimeout = timeoutMs;
 
     const options: ConnectionOptions = {
@@ -94,10 +93,6 @@ class MessagingService {
       pingInterval: pingIntervalMs,
       ...optionalOptions
     };
-
-    if (this.disconnecting) {
-      await this.waitForDisconnect()
-    }
 
     if (!this.conn && !this.connecting) {
       this.connecting = true
@@ -144,7 +139,8 @@ class MessagingService {
     channel: string,
     msgHandler: (channel: string, data: Message) => void
   ): Subscription | undefined {
-    if (!this.conn || this.disconnecting) {
+    if (!this.conn) {
+      console.log('test')
       this.queue.push({ channel, msgHandler })
       this.connect(this.config as MessagingConfig, this.optionalOptions)
       return
@@ -189,23 +185,10 @@ class MessagingService {
 
   async disconnect(): Promise<void> {
     if (this.conn && !(this.conn.isDraining() || this.conn.isClosed())) {
-      this.disconnecting = true
       await this.conn.drain();
       this.conn = null;
       this.subscriptions.clear()
-      this.disconnecting = false
     }
-  }
-
-  async waitForDisconnect() {
-    // return new Promise((resolve) => {
-    //   const interval = setInterval(() => {
-    //     if (!this.disconnecting) {
-    //       clearInterval(interval)
-    //       resolve()
-    //     }
-    //   }, 100)
-    // })
   }
 
   private getConn(): NatsConnection {
