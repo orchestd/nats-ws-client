@@ -147,7 +147,6 @@ class MessagingService {
     channel: string,
     msgHandler: (channel: string, data: Message) => void
   ): Subscription | undefined {
-    console.log('subbbb', this.queue)
     if (!this.conn) {
       this.queue.push({ channel, msgHandler })
       try {
@@ -180,18 +179,13 @@ class MessagingService {
   }
 
   unsubscribe(channel: string) {
-    console.log('queue 1', this.queue)
     this.queue = this.queue.filter(el => el.channel !== channel)
-    console.log('queue 2', this.queue)
-    setTimeout(() => {
-      const sub = this.subscriptions.get(channel)
-      console.log('timeout', sub)
-      if (sub) {
-        sub.drain()
-          .then(() => sub.unsubscribe())
-          .catch((err) => console.error(`[NATS] Error draining ${channel}:`, err));
-      }
-    }, 1000)
+    const sub = this.subscriptions.get(channel)
+    if (sub) {
+      sub.drain()
+        .then(() => sub.unsubscribe())
+        .catch((err) => console.error(`[NATS] Error draining ${channel}:`, err));
+    }
   }
 
   async disconnect(): Promise<void> {
