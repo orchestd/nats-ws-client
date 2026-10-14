@@ -67,7 +67,7 @@ class MessagingService {
   private defaultTimeout = 10000;
   private subscriptions: Map<string, Subscription> = new Map();
 
-  async connect(config: MessagingConfig, connectionOptions?: ConnectionOptions): Promise<NatsConnection> {
+  async connect(config: MessagingConfig, connectionOptions?: ConnectionOptions): Promise<NatsConnection | null> {
     if (this.conn) {
       return this.conn;
     }
@@ -100,24 +100,20 @@ class MessagingService {
 
     if (!this.conn && !this.connecting) {
       this.connecting = true
-      try {
-        this.conn = await wsconnect(options)
-        this.monitorStatus(this.conn)
-        this.connecting = false
+      this.conn = await wsconnect(options)
+      this.monitorStatus(this.conn)
+      this.connecting = false
 
-        while (this.queue.length) {
-          const task = this.queue.shift()
-          if (task) {
-            this.subscribe(task?.channel, task.msgHandler)
-          }
+      while (this.queue.length) {
+        const task = this.queue.shift()
+        if (task) {
+          this.subscribe(task?.channel, task.msgHandler)
         }
-        return this.conn;
-      } catch (e) {
-        console.error('[NATS] connection failed', e)
       }
+      return this.conn;
     }
 
-    return this.conn as NatsConnection;
+    return null;
   }
 
   async request<TResponse extends StandardResponse = StandardResponse>(
@@ -183,7 +179,10 @@ class MessagingService {
     const sub = this.subscriptions.get(channel)
     if (sub) {
       sub.drain()
-        .then(() => sub.unsubscribe())
+        .then(() => {
+          sub.unsubscribe()
+          this.subscriptions.delete(channel)
+        })
         .catch((err) => console.error(`[NATS] Error draining ${channel}:`, err));
     }
   }
