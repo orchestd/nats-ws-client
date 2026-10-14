@@ -51,14 +51,23 @@ export interface Message<T = unknown> {
   data: T
 }
 
+interface Task {
+  channel: string;
+  msgHandler: (channel: string, data: Message) => void;
+}
+
 export type ActionHandler<T = unknown> = (channel: string, data: T) => void;
 
 class MessagingService {
   private conn: NatsConnection | null = null;
+  private optionalOptions: ConnectionOptions = {} as ConnectionOptions
+  private config: MessagingConfig = {} as MessagingConfig
+  private queue: Task[] = [];
+  private connecting = false;
   private defaultTimeout = 10000;
-  private subscriptions: Record<string, Subscription> = {}
+  private subscriptions: Map<string, Subscription> = new Map();
 
-  async connect(config: MessagingConfig): Promise<NatsConnection> {
+  async connect(config: MessagingConfig, optionalOptions?: ConnectionOptions): Promise<NatsConnection> {
     const {
       servers,
       user,
@@ -70,6 +79,8 @@ class MessagingService {
       pingIntervalMs = 2000,
     } = config;
 
+    this.config = config
+    this.optionalOptions = optionalOptions ?? {}
     this.defaultTimeout = timeoutMs;
 
     const options: ConnectionOptions = {
@@ -80,11 +91,25 @@ class MessagingService {
       maxReconnectAttempts,
       reconnectTimeWait: reconnectTimeWaitMs,
       pingInterval: pingIntervalMs,
+      ...optionalOptions
     };
 
-    this.conn = await wsconnect(options);
-    this.monitorStatus(this.conn);
-    return this.conn;
+    if (!this.conn && !this.connecting) {
+      this.connecting = true
+      this.conn = await wsconnect(options)
+      this.monitorStatus(this.conn)
+      this.connecting = false
+
+      while (this.queue.length) {
+        const task = this.queue.shift()
+        if (task) {
+          this.subscribe(task?.channel, task.msgHandler)
+        }
+      }
+      return this.conn;
+    }
+
+    return this.conn as NatsConnection;
   }
 
   async request<TResponse extends StandardResponse = StandardResponse>(
@@ -113,42 +138,59 @@ class MessagingService {
   subscribe(
     channel: string,
     msgHandler: (channel: string, data: Message) => void
-  ): Subscription {
-    if (this.subscriptions[channel]) return this.subscriptions[channel]
-    const conn = this.getConn();
-    const sub = conn.subscribe(channel, {
-      callback: (err: Error | null, msg: Msg) => {
-        if (err) {
-          console.error(`[NATS] Subscription error on channel ${channel}:`, err);
-          return;
-        }
-        try {
-          const data = msg.json<Message>();
-          msgHandler(channel, data);
-        } catch (e) {
-          console.error(`[NATS] Failed to decode/handle message on ${channel}, msg: ${msg}`, e);
-        }
-      },
-    });
-    this.subscriptions[channel] = sub
-    return sub
+  ): Subscription | undefined {
+    if (!this.conn) {
+      this.queue.push({ channel, msgHandler })
+      try {
+        this.connect(this.config as MessagingConfig, this.optionalOptions)
+      } catch (e) {
+        console.warn('[NATS] failed to connect on subscribe', e)
+      }
+      return
+    } else if (this.subscriptions.has(channel)) {
+      return this.subscriptions.get(channel)
+    } else {
+      const conn = this.getConn();
+      const sub = conn.subscribe(channel, {
+        callback: (err: Error | null, msg: Msg) => {
+          if (err) {
+            console.error(`[NATS] Subscription error on channel ${channel}:`, err);
+            return;
+          }
+          try {
+            const data = msg.json<Message>();
+            msgHandler(channel, data);
+          } catch (e) {
+            console.error(`[NATS] Failed to decode/handle message on ${channel}, msg: ${msg}`, e);
+          }
+        },
+      });
+      this.subscriptions.set(channel, sub)
+      return sub
+    }
   }
 
   unsubscribe(channel: string) {
-    const sub = this.subscriptions[channel]
+    const index = this.queue.findIndex(el => el.channel === channel)
+    if (index !== -1) {
+      this.queue.splice(index, 1)
+    }
+
+    const sub = this.subscriptions.get(channel)
     if (sub) {
       sub.drain()
         .then(() => {
           sub.unsubscribe()
-          delete this.subscriptions[channel]
+          this.subscriptions.delete(channel)
         })
     }
   }
 
   async disconnect(): Promise<void> {
-    if (this.conn) {
+    if (this.conn && !(this.conn.isDraining() || this.conn.isClosed())) {
       await this.conn.drain();
       this.conn = null;
+      this.subscriptions.clear()
     }
   }
 
@@ -175,20 +217,20 @@ class MessagingService {
 export const messagingService = new MessagingService();
 
 // Standalone function exports
-export const connectMessagingService = (config: ConnectionConfig) => {
+export const connectMessagingService = (config: ConnectionConfig, options?: ConnectionOptions) => {
   switch (config.authType) {
     case 'userpass':
       return messagingService.connect({
         servers: config.servers,
         user: config.credentials.username,
         pass: config.credentials.password,
-      });
+      }, options);
 
     case 'jwt':
       return messagingService.connect({
         servers: config.servers,
         authenticator: jwtAuthenticator(config.credentials.jwt),
-      });
+      }, options);
 
     default: {
       throw new Error(`Auth type not supported: ${JSON.stringify(config)}`);

@@ -20,7 +20,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/**/*.ts",
     "prepublishOnly": "npm run build",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "prepack": "yarn build"
   },
   "keywords": [
     "nats",
@@ -33,11 +34,11 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@nats-io/nats-core": "^3.4.0"
+    "@nats-io/nats-core": "^3.4.0",
+    "tsup": "^8.0.2"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "tsup": "^8.0.2",
     "typescript": "^5.3.3"
   },
   "engines": {
