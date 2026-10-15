@@ -3,7 +3,8 @@ import {
   NatsConnection,
   ConnectionOptions,
   Subscription,
-  Msg, Authenticator, jwtAuthenticator
+  Msg, Authenticator, jwtAuthenticator, DisconnectStatus, ReconnectStatus, ReconnectingStatus, ServerErrorStatus,
+  ClientPingStatus, StaleConnectionStatus, SlowConsumerStatus, CloseStatus, MsgCallback
 } from '@nats-io/nats-core';
 
 export interface MessagingConfig {
@@ -35,6 +36,17 @@ export interface JwtConnectionConfig extends BaseConnectionConfig {
 
 export type ConnectionConfig = UserPassConnectionConfig | JwtConnectionConfig;
 
+export interface Options extends ConnectionOptions {
+  onDisconnect: (e: DisconnectStatus) => void;
+  onReconnect: (e: ReconnectStatus) => void;
+  onReconnecting: (e: ReconnectingStatus) => void;
+  onServerError: (e: ServerErrorStatus) => void;
+  onPing: (e: ClientPingStatus) => void;
+  onStaleConnection: (e: StaleConnectionStatus) => void;
+  onSlowConsumer: (e: SlowConsumerStatus) => void;
+  onClose: (e: CloseStatus) => void;
+}
+
 export interface RequestOptions {
   timeout?: number;
 }
@@ -53,21 +65,22 @@ export interface Message<T = unknown> {
 
 interface Task {
   channel: string;
-  msgHandler: (channel: string, data: Message) => void;
+  msgHandler?: (channel: string, data: Message) => void;
+  callback?: MsgCallback<Msg>;
 }
 
 export type ActionHandler<T = unknown> = (channel: string, data: T) => void;
 
 class MessagingService {
   private conn: NatsConnection | null = null;
-  private connectionOptions: ConnectionOptions = {} as ConnectionOptions
+  private connectionOptions: Options = {} as Options
   private config: MessagingConfig = {} as MessagingConfig
   private queue: Task[] = [];
   private connecting = false;
   private defaultTimeout = 10000;
   private subscriptions: Map<string, Subscription> = new Map();
 
-  async connect(config: MessagingConfig, connectionOptions?: ConnectionOptions): Promise<NatsConnection | null> {
+  async connect(config: MessagingConfig, connectionOptions?: Options): Promise<NatsConnection | null> {
     if (this.conn) {
       return this.conn;
     }
@@ -84,7 +97,7 @@ class MessagingService {
     } = config;
 
     this.config = config
-    this.connectionOptions = connectionOptions ?? {}
+    this.connectionOptions = connectionOptions ?? {} as Options
     this.defaultTimeout = timeoutMs;
 
     const options: ConnectionOptions = {
@@ -101,13 +114,14 @@ class MessagingService {
     if (!this.conn && !this.connecting) {
       this.connecting = true
       this.conn = await wsconnect(options)
-      this.monitorStatus(this.conn)
+      this.monitorStatus(this.connectionOptions)
       this.connecting = false
 
       while (this.queue.length) {
         const task = this.queue.shift()
         if (task) {
-          this.subscribe(task?.channel, task.msgHandler)
+          if (task.msgHandler) this.subscribe(task.channel, task.msgHandler)
+          else if (task.callback) this.subscribeHandler(task.channel, task.callback)
         }
       }
       return this.conn;
@@ -123,15 +137,8 @@ class MessagingService {
   ): Promise<TResponse> {
     const conn = this.getConn();
     const timeout = opt?.timeout ?? this.defaultTimeout;
-
     const res = await conn.request(channel, JSON.stringify(msg), { timeout });
-    const decoded = res.json<TResponse>();
-
-    if (!decoded?.success) {
-      throw decoded;
-    }
-
-    return decoded;
+    return res.json<TResponse>();
   }
 
   publish(channel: string, msg: Message): void {
@@ -195,6 +202,28 @@ class MessagingService {
     }
   }
 
+  async reconnect(): Promise<void> {
+    if (this.conn && this.conn.isDraining()) return
+    this.subscriptions.forEach(sub => {
+      this.queue.push({
+        channel: sub.getSubject(),
+        callback: sub.callback,
+      })
+    })
+    this.disconnect()
+      .then(() => this.connect(this.config, this.connectionOptions))
+  }
+
+  private subscribeHandler(
+    channel: string,
+    callback: MsgCallback<Msg>
+  ) {
+    if (this.conn && !this.subscriptions.has(channel)) {
+      const sub = this.conn.subscribe(channel, { callback })
+      this.subscriptions.set(channel, sub)
+    }
+  }
+
   private getConn(): NatsConnection {
     if (!this.conn) {
       throw new Error('NATS MessagingService is not connected. Call connect() first.');
@@ -202,15 +231,43 @@ class MessagingService {
     return this.conn;
   }
 
-  private async monitorStatus(conn: NatsConnection): Promise<void> {
-    try {
-      for await (const s of conn.status()) {
-        if (s.type !== 'ping' && s.type !== 'update') {
-          console.log(`[NATS] Event:`, s);
+  private async monitorStatus(eventHandlers: Options): Promise<void> {
+    if (this.conn) {
+      try {
+        for await (const s of this.conn.status()) {
+          switch (s.type) {
+            case "close":
+              eventHandlers.onClose(s)
+              break
+            case "disconnect":
+              eventHandlers.onDisconnect(s)
+              break
+            case "slowConsumer":
+              eventHandlers.onSlowConsumer(s)
+              break
+            case "error":
+              eventHandlers.onServerError(s)
+              break
+            case "staleConnection":
+              eventHandlers.onStaleConnection(s)
+              break
+            case "reconnect":
+              eventHandlers.onReconnect(s)
+              break
+            case "reconnecting":
+              eventHandlers.onReconnecting(s)
+              break
+            case "ping":
+              eventHandlers.onPing(s)
+              break
+          }
+          if (s.type !== 'ping' && s.type !== 'update') {
+            console.log(`[NATS] Event:`, s);
+          }
         }
+      } catch (err) {
+        console.error('[NATS] Status monitor error:', err);
       }
-    } catch (err) {
-      console.error('[NATS] Status monitor error:', err);
     }
   }
 }
@@ -218,7 +275,7 @@ class MessagingService {
 export const messagingService = new MessagingService();
 
 // Standalone function exports
-export const connectMessagingService = (config: ConnectionConfig, options?: ConnectionOptions) => {
+export const connectMessagingService = (config: ConnectionConfig, options?: Options) => {
   switch (config.authType) {
     case 'userpass':
       return messagingService.connect({
