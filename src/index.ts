@@ -138,7 +138,7 @@ class MessagingService {
     const conn = this.getConn();
     const timeout = opt?.timeout ?? this.defaultTimeout;
     const res = await conn.request(channel, JSON.stringify(msg), { timeout });
-    return res.json<TResponse>();;
+    return res.json<TResponse>();
   }
 
   publish(channel: string, msg: Message): void {
