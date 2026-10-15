@@ -60,14 +60,18 @@ export type ActionHandler<T = unknown> = (channel: string, data: T) => void;
 
 class MessagingService {
   private conn: NatsConnection | null = null;
-  private optionalOptions: ConnectionOptions = {} as ConnectionOptions
+  private connectionOptions: ConnectionOptions = {} as ConnectionOptions
   private config: MessagingConfig = {} as MessagingConfig
   private queue: Task[] = [];
   private connecting = false;
   private defaultTimeout = 10000;
   private subscriptions: Map<string, Subscription> = new Map();
 
-  async connect(config: MessagingConfig, optionalOptions?: ConnectionOptions): Promise<NatsConnection> {
+  async connect(config: MessagingConfig, connectionOptions?: ConnectionOptions): Promise<NatsConnection | null> {
+    if (this.conn) {
+      return this.conn;
+    }
+
     const {
       servers,
       user,
@@ -80,7 +84,7 @@ class MessagingService {
     } = config;
 
     this.config = config
-    this.optionalOptions = optionalOptions ?? {}
+    this.connectionOptions = connectionOptions ?? {}
     this.defaultTimeout = timeoutMs;
 
     const options: ConnectionOptions = {
@@ -91,7 +95,7 @@ class MessagingService {
       maxReconnectAttempts,
       reconnectTimeWait: reconnectTimeWaitMs,
       pingInterval: pingIntervalMs,
-      ...optionalOptions
+      ...connectionOptions
     };
 
     if (!this.conn && !this.connecting) {
@@ -109,7 +113,7 @@ class MessagingService {
       return this.conn;
     }
 
-    return this.conn as NatsConnection;
+    return null;
   }
 
   async request<TResponse extends StandardResponse = StandardResponse>(
@@ -142,9 +146,9 @@ class MessagingService {
     if (!this.conn) {
       this.queue.push({ channel, msgHandler })
       try {
-        this.connect(this.config as MessagingConfig, this.optionalOptions)
+        this.connect(this.config as MessagingConfig, this.connectionOptions)
       } catch (e) {
-        console.warn('[NATS] failed to connect on subscribe', e)
+        console.warn(`[NATS] failed to connect on subscribe [${channel}], config [${this.config}]`, e)
       }
       return
     } else if (this.subscriptions.has(channel)) {
@@ -171,11 +175,7 @@ class MessagingService {
   }
 
   unsubscribe(channel: string) {
-    const index = this.queue.findIndex(el => el.channel === channel)
-    if (index !== -1) {
-      this.queue.splice(index, 1)
-    }
-
+    this.queue = this.queue.filter(el => el.channel !== channel)
     const sub = this.subscriptions.get(channel)
     if (sub) {
       sub.drain()
@@ -183,6 +183,7 @@ class MessagingService {
           sub.unsubscribe()
           this.subscriptions.delete(channel)
         })
+        .catch((err) => console.error(`[NATS] Error draining ${channel}:`, err));
     }
   }
 
