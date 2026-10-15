@@ -114,7 +114,7 @@ class MessagingService {
     if (!this.conn && !this.connecting) {
       this.connecting = true
       this.conn = await wsconnect(options)
-      this.monitorStatus(this.conn)
+      this.monitorStatus(this.connectionOptions)
       this.connecting = false
 
       while (this.queue.length) {
@@ -231,15 +231,43 @@ class MessagingService {
     return this.conn;
   }
 
-  private async monitorStatus(conn: NatsConnection): Promise<void> {
-    try {
-      for await (const s of conn.status()) {
-        if (s.type !== 'ping' && s.type !== 'update') {
-          console.log(`[NATS] Event:`, s);
+  private async monitorStatus(eventHandlers: Options): Promise<void> {
+    if (this.conn) {
+      try {
+        for await (const s of this.conn.status()) {
+          switch (s.type) {
+            case "close":
+              eventHandlers.onClose(s)
+              break
+            case "disconnect":
+              eventHandlers.onDisconnect(s)
+              break
+            case "slowConsumer":
+              eventHandlers.onSlowConsumer(s)
+              break
+            case "error":
+              eventHandlers.onServerError(s)
+              break
+            case "staleConnection":
+              eventHandlers.onStaleConnection(s)
+              break
+            case "reconnect":
+              eventHandlers.onReconnect(s)
+              break
+            case "reconnecting":
+              eventHandlers.onReconnecting(s)
+              break
+            case "ping":
+              eventHandlers.onPing(s)
+              break
+          }
+          if (s.type !== 'ping' && s.type !== 'update') {
+            console.log(`[NATS] Event:`, s);
+          }
         }
+      } catch (err) {
+        console.error('[NATS] Status monitor error:', err);
       }
-    } catch (err) {
-      console.error('[NATS] Status monitor error:', err);
     }
   }
 }
