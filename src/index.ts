@@ -37,14 +37,14 @@ export interface JwtConnectionConfig extends BaseConnectionConfig {
 export type ConnectionConfig = UserPassConnectionConfig | JwtConnectionConfig;
 
 export interface Options extends ConnectionOptions {
-  onDisconnect: (e: DisconnectStatus) => void;
-  onReconnect: (e: ReconnectStatus) => void;
-  onReconnecting: (e: ReconnectingStatus) => void;
-  onServerError: (e: ServerErrorStatus) => void;
-  onPing: (e: ClientPingStatus) => void;
-  onStaleConnection: (e: StaleConnectionStatus) => void;
-  onSlowConsumer: (e: SlowConsumerStatus) => void;
-  onClose: (e: CloseStatus) => void;
+  onDisconnect?: (e: DisconnectStatus) => void;
+  onReconnect?: (e: ReconnectStatus) => void;
+  onReconnecting?: (e: ReconnectingStatus) => void;
+  onServerError?: (e: ServerErrorStatus) => void;
+  onPing?: (e: ClientPingStatus) => void;
+  onStaleConnection?: (e: StaleConnectionStatus) => void;
+  onSlowConsumer?: (e: SlowConsumerStatus) => void;
+  onClose?: (e: CloseStatus) => void;
 }
 
 export interface RequestOptions {
@@ -217,28 +217,28 @@ class MessagingService {
         for await (const s of this.conn.status()) {
           switch (s.type) {
             case "close":
-              eventHandlers.onClose(s)
+              if (eventHandlers.onClose) eventHandlers.onClose(s)
               break
             case "disconnect":
-              eventHandlers.onDisconnect(s)
+              if (eventHandlers.onDisconnect) eventHandlers.onDisconnect(s)
               break
             case "slowConsumer":
-              eventHandlers.onSlowConsumer(s)
+              if (eventHandlers.onSlowConsumer) eventHandlers.onSlowConsumer(s)
               break
             case "error":
-              eventHandlers.onServerError(s)
+              if (eventHandlers.onServerError) eventHandlers.onServerError(s)
               break
             case "staleConnection":
-              eventHandlers.onStaleConnection(s)
+              if (eventHandlers.onStaleConnection) eventHandlers.onStaleConnection(s)
               break
             case "reconnect":
-              eventHandlers.onReconnect(s)
+              if (eventHandlers.onReconnect) eventHandlers.onReconnect(s)
               break
             case "reconnecting":
-              eventHandlers.onReconnecting(s)
+              if (eventHandlers.onReconnecting) eventHandlers.onReconnecting(s)
               break
             case "ping":
-              eventHandlers.onPing(s)
+              if (eventHandlers.onPing) eventHandlers.onPing(s)
               break
           }
           if (s.type !== 'ping' && s.type !== 'update') {
