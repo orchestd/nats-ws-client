@@ -241,6 +241,7 @@ class MessagingService {
   private async monitorStatus(eventHandlers: Options): Promise<void> {
     if (this.conn) {
       try {
+        console.log(eventHandlers)
         for await (const s of this.conn.status()) {
           // switch (s.type) {
           //   case "close":
