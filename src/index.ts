@@ -242,32 +242,32 @@ class MessagingService {
     if (this.conn) {
       try {
         for await (const s of this.conn.status()) {
-          switch (s.type) {
-            case "close":
-              eventHandlers.onClose(s)
-              break
-            case "disconnect":
-              eventHandlers.onDisconnect(s)
-              break
-            case "slowConsumer":
-              eventHandlers.onSlowConsumer(s)
-              break
-            case "error":
-              eventHandlers.onServerError(s)
-              break
-            case "staleConnection":
-              eventHandlers.onStaleConnection(s)
-              break
-            case "reconnect":
-              eventHandlers.onReconnect(s)
-              break
-            case "reconnecting":
-              eventHandlers.onReconnecting(s)
-              break
-            case "ping":
-              eventHandlers.onPing(s)
-              break
-          }
+          // switch (s.type) {
+          //   case "close":
+          //     eventHandlers.onClose(s)
+          //     break
+          //   case "disconnect":
+          //     eventHandlers.onDisconnect(s)
+          //     break
+          //   case "slowConsumer":
+          //     eventHandlers.onSlowConsumer(s)
+          //     break
+          //   case "error":
+          //     eventHandlers.onServerError(s)
+          //     break
+          //   case "staleConnection":
+          //     eventHandlers.onStaleConnection(s)
+          //     break
+          //   case "reconnect":
+          //     eventHandlers.onReconnect(s)
+          //     break
+          //   case "reconnecting":
+          //     eventHandlers.onReconnecting(s)
+          //     break
+          //   case "ping":
+          //     eventHandlers.onPing(s)
+          //     break
+          // }
           if (s.type !== 'ping' && s.type !== 'update') {
             console.log(`[NATS] Event:`, s);
           }
