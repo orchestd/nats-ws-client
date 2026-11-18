@@ -218,8 +218,8 @@ class MessagingService {
     await this.connect(this.config, this.connectionOptions)
   }
 
-  async connectIfNeeded(): Promise<void> {
-    if (this.connecting || (this.conn && !this.conn.isClosed())) return
+  async reconnectIfNeeded(): Promise<void> {
+    if (this.connecting || !(this.conn && this.conn.isClosed())) return
     await this.connect(this.config, this.connectionOptions)
   }
 
