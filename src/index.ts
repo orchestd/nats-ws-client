@@ -215,7 +215,9 @@ class MessagingService {
   }
 
   async reconnectIfNeeded(): Promise<void> {
-    if (this.connecting || !(this.conn && this.conn.isClosed())) return
+    console.log('reconnectIfNeeded')
+    if (this.connecting || !(this.conn && this.conn.isClosed())) return;
+    console.log('actually reconnecting', this.connecting, !(this.conn && this.conn.isClosed()))
     await this.connect(this.config, this.connectionOptions)
   }
 
