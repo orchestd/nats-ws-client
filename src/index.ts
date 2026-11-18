@@ -87,7 +87,6 @@ class MessagingService {
   }
 
   async connect(config: MessagingConfig, connectionOptions?: Options): Promise<NatsConnection | null> {
-    console.log(new Date().toISOString(), '[NATS] connect', this.conn)
     if (this.conn) return Promise.resolve(this.conn)
     if (this.connecting) return this.connecting
 
@@ -121,7 +120,6 @@ class MessagingService {
 
     this.connecting = wsconnect(options)
       .then(conn => {
-        console.log(new Date().toISOString(), '[NATS] connected')
         this.conn = conn
         this.monitorStatus(this.connectionOptions)
         this.resolveReady(conn)
@@ -170,12 +168,10 @@ class MessagingService {
 
   private subscribeInner(channel: string, callback: MsgCallback<Msg>): Promise<Subscription> {
     const existingSub = this.subscriptions.get(channel)
-    console.log(new Date().toISOString(), '[NATS] subscribeInner', channel, existingSub)
     if (existingSub) return Promise.resolve(existingSub)
 
     this.handlers.set(channel, callback)
     const sub = this.ready.then(conn => conn.subscribe(channel, { callback }))
-    console.log(new Date().toISOString(), '[NATS] subed', channel)
     this.subscriptions.set(channel, sub)
 
     sub.catch(() => {
@@ -232,7 +228,7 @@ class MessagingService {
               eventHandlers.onClose?.(s)
               break
             case "disconnect":
-              this.reset()
+              // this.reset()
               eventHandlers.onDisconnect?.(s)
               break
             case "slowConsumer":
@@ -245,11 +241,11 @@ class MessagingService {
               eventHandlers.onStaleConnection?.(s)
               break
             case "reconnect":
-              this.resolveReady(this.conn)
+              // this.resolveReady(this.conn)
               eventHandlers.onReconnect?.(s)
               break
             case "reconnecting":
-              this.connecting = Promise.resolve(this.conn)
+              // this.connecting = Promise.resolve(this.conn)
               eventHandlers.onReconnecting?.(s)
               break
             case "ping":
