@@ -87,7 +87,7 @@ class MessagingService {
   }
 
   async connect(config: MessagingConfig, connectionOptions?: Options): Promise<NatsConnection | null> {
-    console.log('[NATS] connect', this.conn)
+    console.log(new Date().toISOString(), '[NATS] connect', this.conn)
     if (this.conn) return Promise.resolve(this.conn)
     if (this.connecting) return this.connecting
 
@@ -117,11 +117,11 @@ class MessagingService {
       ...connectionOptions
     };
 
-    console.log('[NATS] connect options', options)
+    console.log(new Date().toISOString(), '[NATS] connect options', options)
 
     this.connecting = wsconnect(options)
       .then(conn => {
-        console.log('[NATS] connected')
+        console.log(new Date().toISOString(), '[NATS] connected')
         this.conn = conn
         this.monitorStatus(this.connectionOptions)
         this.resolveReady(conn)
@@ -170,16 +170,16 @@ class MessagingService {
 
   private subscribeInner(channel: string, callback: MsgCallback<Msg>): Promise<Subscription> {
     const existingSub = this.subscriptions.get(channel)
-    console.log('[NATS] subscribeInner', channel, existingSub)
+    console.log(new Date().toISOString(), '[NATS] subscribeInner', channel, existingSub)
     if (existingSub) return Promise.resolve(existingSub)
 
     this.handlers.set(channel, callback)
     const sub = this.ready.then(conn => conn.subscribe(channel, { callback }))
-    console.log('[NATS] subed', channel)
+    console.log(new Date().toISOString(), '[NATS] subed', channel)
     this.subscriptions.set(channel, sub)
 
     sub.catch(() => {
-      console.log('[NATS] sub catch', channel)
+      console.log(new Date().toISOString(), '[NATS] sub catch', channel)
       this.subscriptions.delete(channel)
       this.handlers.delete(channel)
     })
@@ -249,7 +249,7 @@ class MessagingService {
               break
           }
           if (s.type !== 'ping' && s.type !== 'update') {
-             console.log(`[NATS] Event:`, s);
+             console.log(new Date().toISOString(), `[NATS] Event:`, s);
           }
         }
       } catch (err) {
