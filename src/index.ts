@@ -218,6 +218,11 @@ class MessagingService {
     await this.connect(this.config, this.connectionOptions)
   }
 
+  async connectIfNeeded(): Promise<void> {
+    if (this.connecting || (this.conn && !this.conn.isClosed())) return
+    await this.connect(this.config, this.connectionOptions)
+  }
+
   private async monitorStatus(eventHandlers: Options): Promise<void> {
     if (this.conn) {
       try {
@@ -227,6 +232,7 @@ class MessagingService {
               eventHandlers.onClose?.(s)
               break
             case "disconnect":
+              this.reset()
               eventHandlers.onDisconnect?.(s)
               break
             case "slowConsumer":
@@ -239,9 +245,11 @@ class MessagingService {
               eventHandlers.onStaleConnection?.(s)
               break
             case "reconnect":
+              this.resolveReady(this.conn)
               eventHandlers.onReconnect?.(s)
               break
             case "reconnecting":
+              this.connecting = Promise.resolve(this.conn)
               eventHandlers.onReconnecting?.(s)
               break
             case "ping":
