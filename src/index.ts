@@ -81,6 +81,7 @@ class MessagingService {
   private subscriptions: Map<string, Subscription> = new Map();
 
   async connect(config: MessagingConfig, connectionOptions?: Options): Promise<NatsConnection | null> {
+    console.log('[NATS] connect', this.conn)
     if (this.conn) {
       return this.conn;
     }
@@ -114,11 +115,13 @@ class MessagingService {
     if (!this.conn && !this.connecting) {
       this.connecting = true
       this.conn = await wsconnect(options)
+      console.log('[NATS] connected')
       this.monitorStatus(this.connectionOptions)
       this.connecting = false
 
       while (this.queue.length) {
         const task = this.queue.shift()
+        console.log('[NATS] queue task', task)
         if (task) {
           if (task.msgHandler) this.subscribe(task.channel, task.msgHandler)
           else if (task.callback) this.subscribeHandler(task.channel, task.callback)
@@ -150,7 +153,9 @@ class MessagingService {
     channel: string,
     msgHandler: (channel: string, data: Message) => void
   ): Subscription | undefined {
+    console.log('[NATS] subscribe', channel)
     if (!this.conn) {
+      console.log('[NATS] add to queue', channel)
       this.queue.push({ channel, msgHandler })
       try {
         this.connect(this.config as MessagingConfig, this.connectionOptions)
@@ -159,8 +164,10 @@ class MessagingService {
       }
       return
     } else if (this.subscriptions.has(channel)) {
+      console.log('[NATS] has channel', channel)
       return this.subscriptions.get(channel)
     } else {
+      console.log('[NATS] subscribing', channel)
       const conn = this.getConn();
       const sub = conn.subscribe(channel, {
         callback: (err: Error | null, msg: Msg) => {
