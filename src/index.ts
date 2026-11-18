@@ -63,27 +63,32 @@ export interface Message<T = unknown> {
   data: T
 }
 
-interface Task {
-  channel: string;
-  msgHandler?: (channel: string, data: Message) => void;
-  callback?: MsgCallback<Msg>;
-}
-
 export type ActionHandler<T = unknown> = (channel: string, data: T) => void;
 
 class MessagingService {
   private conn: NatsConnection | null = null;
+  private connecting: Promise<NatsConnection> | null = null;
+  private ready!: Promise<NatsConnection>;
+  private resolveReady!: (conn: NatsConnection) => void;
+
   private connectionOptions: Options = {} as Options
   private config: MessagingConfig = {} as MessagingConfig
-  private queue: Task[] = [];
-  private connecting = false;
   private defaultTimeout = 10000;
-  private subscriptions: Map<string, Subscription> = new Map();
+
+  private subscriptions: Map<string, Promise<Subscription>> = new Map();
+  private handlers = new Map<string, MsgCallback<Msg>>()
+
+  constructor() {
+    this.reset()
+  }
+
+  private reset() {
+    this.ready = new Promise(resolve => (this.resolveReady = resolve))
+  }
 
   async connect(config: MessagingConfig, connectionOptions?: Options): Promise<NatsConnection | null> {
-    if (this.conn) {
-      return this.conn;
-    }
+    if (this.conn) return Promise.resolve(this.conn)
+    if (this.connecting) return this.connecting
 
     const {
       servers,
@@ -111,23 +116,18 @@ class MessagingService {
       ...connectionOptions
     };
 
-    if (!this.conn && !this.connecting) {
-      this.connecting = true
-      this.conn = await wsconnect(options)
-      this.monitorStatus(this.connectionOptions)
-      this.connecting = false
+    this.connecting = wsconnect(options)
+      .then(conn => {
+        this.conn = conn
+        this.monitorStatus(this.connectionOptions)
+        this.resolveReady(conn)
+        return conn
+      })
+      .finally(() => {
+        this.connecting = null
+      })
 
-      while (this.queue.length) {
-        const task = this.queue.shift()
-        if (task) {
-          if (task.msgHandler) this.subscribe(task.channel, task.msgHandler)
-          else if (task.callback) this.subscribeHandler(task.channel, task.callback)
-        }
-      }
-      return this.conn;
-    }
-
-    return null;
+    return this.connecting
   }
 
   async request<TResponse extends StandardResponse = StandardResponse>(
@@ -135,62 +135,62 @@ class MessagingService {
     msg: Message,
     opt?: RequestOptions
   ): Promise<TResponse> {
-    const conn = this.getConn();
+    const conn = await this.ready
     const timeout = opt?.timeout ?? this.defaultTimeout;
     const res = await conn.request(channel, JSON.stringify(msg), { timeout });
     return res.json<TResponse>();
   }
 
-  publish(channel: string, msg: Message): void {
-    const conn = this.getConn();
+  async publish(channel: string, msg: Message): Promise<void> {
+    const conn = await this.ready
     conn.publish(channel, JSON.stringify(msg));
   }
 
   subscribe(
     channel: string,
     msgHandler: (channel: string, data: Message) => void
-  ): Subscription | undefined {
-    if (!this.conn) {
-      this.queue.push({ channel, msgHandler })
-      try {
-        this.connect(this.config as MessagingConfig, this.connectionOptions)
-      } catch (e) {
-        console.warn(`[NATS] failed to connect on subscribe [${channel}], config [${this.config}]`, e)
+  ): Promise<Subscription> {
+    return this.subscribeInner(channel, (err: Error | null, msg: Msg) => {
+      if (err) {
+        console.error(`[NATS] Subscription error on channel ${channel}:`, err);
+        return;
       }
-      return
-    } else if (this.subscriptions.has(channel)) {
-      return this.subscriptions.get(channel)
-    } else {
-      const conn = this.getConn();
-      const sub = conn.subscribe(channel, {
-        callback: (err: Error | null, msg: Msg) => {
-          if (err) {
-            console.error(`[NATS] Subscription error on channel ${channel}:`, err);
-            return;
-          }
-          try {
-            const data = msg.json<Message>();
-            msgHandler(channel, data);
-          } catch (e) {
-            console.error(`[NATS] Failed to decode/handle message on ${channel}, msg: ${msg}`, e);
-          }
-        },
-      });
-      this.subscriptions.set(channel, sub)
-      return sub
-    }
+      try {
+        const data = msg.json<Message>();
+        msgHandler(channel, data);
+      } catch (e) {
+        console.error(`[NATS] Failed to decode/handle message on ${channel}, msg: ${msg}`, e);
+      }
+    })
   }
 
-  unsubscribe(channel: string) {
-    this.queue = this.queue.filter(el => el.channel !== channel)
-    const sub = this.subscriptions.get(channel)
-    if (sub) {
-      sub.drain()
-        .then(() => {
-          sub.unsubscribe()
-          this.subscriptions.delete(channel)
-        })
-        .catch((err) => console.error(`[NATS] Error draining ${channel}:`, err));
+  private subscribeInner(channel: string, callback: MsgCallback<Msg>): Promise<Subscription> {
+    const existingSub = this.subscriptions.get(channel)
+    if (existingSub) return Promise.resolve(existingSub)
+
+    this.handlers.set(channel, callback)
+    const sub = this.ready.then(conn => conn.subscribe(channel, { callback }))
+    this.subscriptions.set(channel, sub)
+
+    sub.catch(() => {
+      this.subscriptions.delete(channel)
+      this.handlers.delete(channel)
+    })
+    return sub
+  }
+
+  async unsubscribe(channel: string) {
+    const p = this.subscriptions.get(channel);
+    this.subscriptions.delete(channel)
+    this.handlers.delete(channel)
+
+    if (p) {
+      try {
+        const sub = await p
+        await sub.drain()
+      } catch (err) {
+        console.error(`[NATS] Error draining ${channel}:`, err);
+      }
     }
   }
 
@@ -198,37 +198,17 @@ class MessagingService {
     if (this.conn && !(this.conn.isDraining() || this.conn.isClosed())) {
       await this.conn.drain();
       this.conn = null;
+      this.reset()
       this.subscriptions.clear()
     }
   }
 
   async reconnect(): Promise<void> {
-    if (this.conn && this.conn.isDraining()) return
-    this.subscriptions.forEach(sub => {
-      this.queue.push({
-        channel: sub.getSubject(),
-        callback: sub.callback,
-      })
-    })
-    this.disconnect()
-      .then(() => this.connect(this.config, this.connectionOptions))
-  }
-
-  private subscribeHandler(
-    channel: string,
-    callback: MsgCallback<Msg>
-  ) {
-    if (this.conn && !this.subscriptions.has(channel)) {
-      const sub = this.conn.subscribe(channel, { callback })
-      this.subscriptions.set(channel, sub)
-    }
-  }
-
-  private getConn(): NatsConnection {
-    if (!this.conn) {
-      throw new Error('NATS MessagingService is not connected. Call connect() first.');
-    }
-    return this.conn;
+    if (this.conn && this.conn.isDraining()) return;
+    const handlers = [...this.handlers]
+    await this.disconnect()
+    for (const [channel, cb] of handlers) this.subscribeInner(channel, cb);
+    await this.connect(this.config, this.connectionOptions)
   }
 
   private async monitorStatus(eventHandlers: Options): Promise<void> {
@@ -262,7 +242,7 @@ class MessagingService {
               break
           }
           if (s.type !== 'ping' && s.type !== 'update') {
-            console.log(`[NATS] Event:`, s);
+            // console.log(`[NATS] Event:`, s);
           }
         }
       } catch (err) {
