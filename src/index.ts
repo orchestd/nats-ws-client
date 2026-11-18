@@ -146,7 +146,7 @@ class MessagingService {
     channel: string,
     msgHandler: (channel: string, data: Message) => void
   ): Subscription | undefined {
-    console.log('[NATS] subscribe', channel)
+    console.log('[NATS] subscribe', channel, this.conn)
     if (!this.conn) {
       console.log('[NATS] subscribe push queue', channel)
       this.queue.push({ channel, msgHandler })
@@ -157,7 +157,7 @@ class MessagingService {
       }
       return
     } else if (this.subscriptions.has(channel)) {
-      console.log('[NATS] subscribe exist', channel)
+      console.log('[NATS] subscribe exist', channel, this.conn)
       return this.subscriptions.get(channel)
     } else {
       console.log('[NATS] subscribe subscribing', channel)
