@@ -68,10 +68,12 @@ export type ActionHandler<T = unknown> = (channel: string, data: T) => void;
 class MessagingService {
   private connectId = 0
   private conn: NatsConnection | null = null;
+
   private connecting: Promise<NatsConnection | null> | null = null;
   private ready!: Promise<NatsConnection>;
   private resolveReady!: (conn: NatsConnection) => void;
   private readyResolved = false
+  private recovering: Promise<void> | null = null
 
   private connectionOptions: Options = {} as Options
   private config: MessagingConfig = {} as MessagingConfig
@@ -79,7 +81,6 @@ class MessagingService {
 
   private subscriptions: Map<string, Promise<Subscription>> = new Map();
   private handlers = new Map<string, MsgCallback<Msg>>()
-
   private cancelled = new WeakSet<Promise<Subscription>>()
 
   constructor() {
@@ -291,10 +292,49 @@ class MessagingService {
     await this.connect(this.config, this.connectionOptions)
   }
 
-  async reconnectIfNeeded(): Promise<void> {
+  reconnectIfNeeded(): Promise<void> {
     console.log('reconnectIfNeeded', this.conn || this.connecting || !this.config.servers)
-    if (this.conn || this.connecting || !this.config.servers) return;
-    await this.connect(this.config, this.connectionOptions)
+    if (!this.recovering) {
+      this.recovering = this.doReconnectIfNeeded().finally(() => { this.recovering = null })
+    }
+    return this.recovering
+  }
+
+  private async doReconnectIfNeeded(): Promise<void> {
+    if (this.connecting || !this.config.servers) return;
+
+    // fully closed (or never connected)
+    if (!this.conn) {
+      console.log('do connect')
+      await this.connect(this.config, this.connectionOptions)
+      return
+    }
+
+    // connection exists, but is it actually working?
+    if (!(await this.isAlive(this.conn))) {
+      console.log('do reconnect')
+      await this.reconnect()
+    }
+  }
+
+  private async isAlive(conn: NatsConnection, timeout = 2000): Promise<boolean> {
+    // between a 'disconnect' and a 'reconnect' event: nats.js is still retrying
+    if (!this.readyResolved) return false
+
+    // looks connected, but the socket may have died silently while we were
+    // in the background: send a ping and wait for the reply
+    let t: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        conn.flush(),
+        new Promise((_, reject) => { t = setTimeout(() => reject(new Error('ping timeout')), timeout) }),
+      ])
+      return true
+    } catch {
+      return false
+    } finally {
+      clearTimeout(t)
+    }
   }
 
   private async monitorStatus(conn: NatsConnection, eventHandlers: Options): Promise<void> {
