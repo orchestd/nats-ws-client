@@ -141,8 +141,6 @@ class MessagingService {
     };
 
     const id = ++this.connectId
-    console.log(new Date().toISOString(), '[NATS] connect options', options)
-
     this.connecting = wsconnect(options)
       .then(conn => {
         // disconnect() was called while connecting
@@ -293,7 +291,6 @@ class MessagingService {
   }
 
   reconnectIfNeeded(): Promise<void> {
-    console.log('reconnectIfNeeded', this.conn || this.connecting || !this.config.servers)
     if (!this.recovering) {
       this.recovering = this.doReconnectIfNeeded().finally(() => { this.recovering = null })
     }
@@ -305,14 +302,12 @@ class MessagingService {
 
     // fully closed (or never connected)
     if (!this.conn) {
-      console.log('do connect')
       await this.connect(this.config, this.connectionOptions)
       return
     }
 
     // connection exists, but is it actually working?
     if (!(await this.isAlive(this.conn))) {
-      console.log('do reconnect')
       await this.reconnect()
     }
   }
@@ -371,7 +366,8 @@ class MessagingService {
               break
           }
           if (s.type !== 'ping' && s.type !== 'update') {
-             console.log(new Date().toISOString(), `[NATS] Event:`, s);
+            // will log any event so keeping it as a comment for debugging
+            // console.log(new Date().toISOString(), `[NATS] Event:`, s);
           }
         }
       } catch (err) {
