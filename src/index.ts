@@ -37,14 +37,14 @@ export interface JwtConnectionConfig extends BaseConnectionConfig {
 export type ConnectionConfig = UserPassConnectionConfig | JwtConnectionConfig;
 
 export interface Options extends ConnectionOptions {
-  onDisconnect: (e: DisconnectStatus) => void;
-  onReconnect: (e: ReconnectStatus) => void;
-  onReconnecting: (e: ReconnectingStatus) => void;
-  onServerError: (e: ServerErrorStatus) => void;
-  onPing: (e: ClientPingStatus) => void;
-  onStaleConnection: (e: StaleConnectionStatus) => void;
-  onSlowConsumer: (e: SlowConsumerStatus) => void;
-  onClose: (e: CloseStatus) => void;
+  onDisconnect?: (e: DisconnectStatus) => void;
+  onReconnect?: (e: ReconnectStatus) => void;
+  onReconnecting?: (e: ReconnectingStatus) => void;
+  onServerError?: (e: ServerErrorStatus) => void;
+  onPing?: (e: ClientPingStatus) => void;
+  onStaleConnection?: (e: StaleConnectionStatus) => void;
+  onSlowConsumer?: (e: SlowConsumerStatus) => void;
+  onClose?: (e: CloseStatus) => void;
 }
 
 export interface RequestOptions {
@@ -63,27 +63,56 @@ export interface Message<T = unknown> {
   data: T
 }
 
-interface Task {
-  channel: string;
-  msgHandler?: (channel: string, data: Message) => void;
-  callback?: MsgCallback<Msg>;
-}
-
 export type ActionHandler<T = unknown> = (channel: string, data: T) => void;
 
 class MessagingService {
+  private connectId = 0
   private conn: NatsConnection | null = null;
+
+  private connecting: Promise<NatsConnection | null> | null = null;
+  private ready!: Promise<NatsConnection>;
+  private resolveReady!: (conn: NatsConnection) => void;
+  private readyResolved = false
+  private recovering: Promise<void> | null = null
+
   private connectionOptions: Options = {} as Options
   private config: MessagingConfig = {} as MessagingConfig
-  private queue: Task[] = [];
-  private connecting = false;
   private defaultTimeout = 10000;
-  private subscriptions: Map<string, Subscription> = new Map();
+
+  private subscriptions: Map<string, Promise<Subscription>> = new Map();
+  private handlers = new Map<string, MsgCallback<Msg>>()
+  private cancelled = new WeakSet<Promise<Subscription>>()
+
+  constructor() {
+    this.reset()
+  }
+
+  private reset() {
+    const isPending = this.ready !== undefined && !this.readyResolved
+
+    if (isPending) {
+      // Nobody has received a connection from this promise yet,
+      // and callers may be waiting on it. Replacing it would
+      // strand them, so keep it.
+      return
+    }
+
+    // Either this is the first call (from the constructor), or the old
+    // promise already handed out a connection that's now gone.
+    // Create a new pending promise.
+    this.readyResolved = false
+    this.ready = new Promise(resolve => {
+      // Wrap `resolve` so we record that it happened.
+      this.resolveReady = (conn) => {
+        this.readyResolved = true
+        resolve(conn)
+      }
+    })
+  }
 
   async connect(config: MessagingConfig, connectionOptions?: Options): Promise<NatsConnection | null> {
-    if (this.conn) {
-      return this.conn;
-    }
+    if (this.conn) return Promise.resolve(this.conn)
+    if (this.connecting) return this.connecting
 
     const {
       servers,
@@ -111,23 +140,32 @@ class MessagingService {
       ...connectionOptions
     };
 
-    if (!this.conn && !this.connecting) {
-      this.connecting = true
-      this.conn = await wsconnect(options)
-      this.monitorStatus(this.connectionOptions)
-      this.connecting = false
-
-      while (this.queue.length) {
-        const task = this.queue.shift()
-        if (task) {
-          if (task.msgHandler) this.subscribe(task.channel, task.msgHandler)
-          else if (task.callback) this.subscribeHandler(task.channel, task.callback)
+    const id = ++this.connectId
+    this.connecting = wsconnect(options)
+      .then(conn => {
+        // disconnect() was called while connecting
+        if (id !== this.connectId) {
+          conn.close()
+          return null
         }
-      }
-      return this.conn;
-    }
+        this.conn = conn
+        this.monitorStatus(conn, this.connectionOptions)
+        conn.closed().then(() => this.onClosed(conn))
+        this.resolveReady(conn)
+        return conn
+      })
+      .finally(() => { if (id === this.connectId) this.connecting = null })
 
-    return null;
+    return this.connecting
+  }
+
+  private async getConn(timeout: number): Promise<NatsConnection> {
+    let t
+    const timer = new Promise<never>((_, reject) => {
+      t = setTimeout(() => reject(new Error('[NATS] not connected')), timeout)
+    })
+    try { return await Promise.race([this.ready, timer]) }
+    finally { clearTimeout(t) }
   }
 
   async request<TResponse extends StandardResponse = StandardResponse>(
@@ -135,134 +173,201 @@ class MessagingService {
     msg: Message,
     opt?: RequestOptions
   ): Promise<TResponse> {
-    const conn = this.getConn();
     const timeout = opt?.timeout ?? this.defaultTimeout;
+    const conn = await this.getConn(timeout)
     const res = await conn.request(channel, JSON.stringify(msg), { timeout });
     return res.json<TResponse>();
   }
 
-  publish(channel: string, msg: Message): void {
-    const conn = this.getConn();
+  async publish(channel: string, msg: Message): Promise<void> {
+    const conn = await this.getConn(this.defaultTimeout)
     conn.publish(channel, JSON.stringify(msg));
   }
 
   subscribe(
     channel: string,
     msgHandler: (channel: string, data: Message) => void
-  ): Subscription | undefined {
-    if (!this.conn) {
-      this.queue.push({ channel, msgHandler })
-      try {
-        this.connect(this.config as MessagingConfig, this.connectionOptions)
-      } catch (e) {
-        console.warn(`[NATS] failed to connect on subscribe [${channel}], config [${this.config}]`, e)
+  ): Promise<Subscription> {
+    return this.subscribeInner(channel, (err: Error | null, msg: Msg) => {
+      if (err) {
+        console.error(`[NATS] Subscription error on channel ${channel}:`, err);
+        return;
       }
-      return
-    } else if (this.subscriptions.has(channel)) {
-      return this.subscriptions.get(channel)
-    } else {
-      const conn = this.getConn();
-      const sub = conn.subscribe(channel, {
-        callback: (err: Error | null, msg: Msg) => {
-          if (err) {
-            console.error(`[NATS] Subscription error on channel ${channel}:`, err);
-            return;
-          }
-          try {
-            const data = msg.json<Message>();
-            msgHandler(channel, data);
-          } catch (e) {
-            console.error(`[NATS] Failed to decode/handle message on ${channel}, msg: ${msg}`, e);
-          }
-        },
-      });
-      this.subscriptions.set(channel, sub)
-      return sub
+      try {
+        const data = msg.json<Message>();
+        msgHandler(channel, data);
+      } catch (e) {
+        console.error(`[NATS] Failed to decode/handle message on ${channel}, msg: ${msg}`, e);
+      }
+    })
+  }
+
+  private subscribeInner(channel: string, callback: MsgCallback<Msg>): Promise<Subscription> {
+    const existingSub = this.subscriptions.get(channel)
+    if (existingSub) return Promise.resolve(existingSub)
+
+    this.handlers.set(channel, callback)
+    const subPromise: Promise<Subscription> = this.ready.then(conn => {
+      const current = this.subscriptions.get(channel)
+      if (current !== subPromise) {
+        // replaced by a newer subscription to this channel: the channel
+        // is still subscribed, so resolve with that one
+        const wasCancelled = this.cancelled.delete(subPromise)
+        if (current && !wasCancelled) return current
+        // removed by disconnect()/unsubscribe(): really not subscribed
+        throw new Error(`[NATS] subscription to ${channel} was cancelled`)
+      }
+      return conn.subscribe(channel, { callback })
+    })
+
+    this.subscriptions.set(channel, subPromise)
+
+    subPromise.catch(() => {
+      if (this.subscriptions.get(channel) === subPromise) {
+        this.subscriptions.delete(channel)
+        this.handlers.delete(channel)
+      }
+    })
+
+    return subPromise
+  }
+
+  async unsubscribe(channel: string) {
+    const p = this.subscriptions.get(channel)
+    if (p) this.cancelled.add(p)
+    this.subscriptions.delete(channel)
+    this.handlers.delete(channel)
+
+    if (p) {
+      try {
+        const sub = await p
+        await sub.drain()
+      } catch (err) {
+        console.error(`[NATS] Error draining ${channel}:`, err);
+      }
     }
   }
 
-  unsubscribe(channel: string) {
-    this.queue = this.queue.filter(el => el.channel !== channel)
-    const sub = this.subscriptions.get(channel)
-    if (sub) {
-      sub.drain()
-        .then(() => {
-          sub.unsubscribe()
-          this.subscriptions.delete(channel)
-        })
-        .catch((err) => console.error(`[NATS] Error draining ${channel}:`, err));
-    }
+  private onClosed(conn: NatsConnection) {
+    if (this.conn !== conn) return // intentional disconnect() or stale connection
+    this.conn = null
+    this.reset()
+    // subscriptions died with the connection; re-register them so they
+    // come back automatically on the next successful connect()
+    this.subscriptions.clear()
+    for (const [channel, cb] of this.handlers) this.subscribeInner(channel, cb)
   }
 
   async disconnect(): Promise<void> {
-    if (this.conn && !(this.conn.isDraining() || this.conn.isClosed())) {
-      await this.conn.drain();
-      this.conn = null;
-      this.subscriptions.clear()
+    this.connectId++
+    this.connecting = null
+    const conn = this.conn
+    this.conn = null
+
+    this.reset()
+    this.subscriptions.clear()
+    this.handlers.clear()
+
+    if (conn && !(conn.isDraining() || conn.isClosed())) {
+      // case of disconnect while NATS trying to reconnect
+      try {
+        await Promise.race([
+          conn.drain(),
+          new Promise(resolve => setTimeout(resolve, 3000)),
+        ])
+      } catch (e) {
+        console.error('[NATS] drain error', e)
+      }
+      if (!conn.isClosed()) await conn.close().catch(() => {})
     }
   }
 
   async reconnect(): Promise<void> {
-    if (this.conn && this.conn.isDraining()) return
-    this.subscriptions.forEach(sub => {
-      this.queue.push({
-        channel: sub.getSubject(),
-        callback: sub.callback,
-      })
-    })
-    this.disconnect()
-      .then(() => this.connect(this.config, this.connectionOptions))
+    if (this.conn && this.conn.isDraining()) return;
+    const handlers = [...this.handlers]
+    await this.disconnect()
+    for (const [channel, cb] of handlers) this.subscribeInner(channel, cb);
+    await this.connect(this.config, this.connectionOptions)
   }
 
-  private subscribeHandler(
-    channel: string,
-    callback: MsgCallback<Msg>
-  ) {
-    if (this.conn && !this.subscriptions.has(channel)) {
-      const sub = this.conn.subscribe(channel, { callback })
-      this.subscriptions.set(channel, sub)
+  reconnectIfNeeded(): Promise<void> {
+    if (!this.recovering) {
+      this.recovering = this.doReconnectIfNeeded().finally(() => { this.recovering = null })
     }
+    return this.recovering
   }
 
-  private getConn(): NatsConnection {
+  private async doReconnectIfNeeded(): Promise<void> {
+    if (this.connecting || !this.config.servers) return;
+
+    // fully closed (or never connected)
     if (!this.conn) {
-      throw new Error('NATS MessagingService is not connected. Call connect() first.');
+      await this.connect(this.config, this.connectionOptions)
+      return
     }
-    return this.conn;
+
+    // connection exists, but is it actually working?
+    if (!(await this.isAlive(this.conn))) {
+      await this.reconnect()
+    }
   }
 
-  private async monitorStatus(eventHandlers: Options): Promise<void> {
-    if (this.conn) {
+  private async isAlive(conn: NatsConnection, timeout = 2000): Promise<boolean> {
+    // between a 'disconnect' and a 'reconnect' event: nats.js is still retrying
+    if (!this.readyResolved) return false
+
+    // looks connected, but the socket may have died silently while we were
+    // in the background: send a ping and wait for the reply
+    let t: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        conn.flush(),
+        new Promise((_, reject) => { t = setTimeout(() => reject(new Error('ping timeout')), timeout) }),
+      ])
+      return true
+    } catch {
+      return false
+    } finally {
+      clearTimeout(t)
+    }
+  }
+
+  private async monitorStatus(conn: NatsConnection, eventHandlers: Options): Promise<void> {
+    if (conn) {
       try {
-        for await (const s of this.conn.status()) {
+        for await (const s of conn.status()) {
+          if (s.type !== 'close' && conn !== this.conn) continue;
           switch (s.type) {
             case "close":
-              eventHandlers.onClose(s)
+              eventHandlers.onClose?.(s)
               break
             case "disconnect":
-              eventHandlers.onDisconnect(s)
+              this.reset()
+              eventHandlers.onDisconnect?.(s)
               break
             case "slowConsumer":
-              eventHandlers.onSlowConsumer(s)
+              eventHandlers.onSlowConsumer?.(s)
               break
             case "error":
-              eventHandlers.onServerError(s)
+              eventHandlers.onServerError?.(s)
               break
             case "staleConnection":
-              eventHandlers.onStaleConnection(s)
+              eventHandlers.onStaleConnection?.(s)
               break
             case "reconnect":
-              eventHandlers.onReconnect(s)
+              this.resolveReady(conn)
+              eventHandlers.onReconnect?.(s)
               break
             case "reconnecting":
-              eventHandlers.onReconnecting(s)
+              eventHandlers.onReconnecting?.(s)
               break
             case "ping":
-              eventHandlers.onPing(s)
+              eventHandlers.onPing?.(s)
               break
           }
           if (s.type !== 'ping' && s.type !== 'update') {
-            console.log(`[NATS] Event:`, s);
+            // will log any event so keeping it as a comment for debugging
+            // console.log(new Date().toISOString(), `[NATS] Event:`, s);
           }
         }
       } catch (err) {
