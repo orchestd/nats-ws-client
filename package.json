@@ -21,7 +21,8 @@
     "lint": "eslint src/**/*.ts",
     "prepublishOnly": "npm run build",
     "prepare": "npm run build",
-    "prepack": "yarn build"
+    "prepack": "yarn build",
+    "test": "vitest run messaging.test.ts"
   },
   "keywords": [
     "nats",
@@ -39,7 +40,9 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1"
   },
   "engines": {
     "node": ">=18.0.0"
